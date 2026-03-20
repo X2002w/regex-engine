@@ -1,6 +1,17 @@
 -- ast.hs
 -- core: To build a regex expression engine just to build a finite automaton
 
+module Ast (
+  Regex(..),
+  Token,
+  ParseError(..),
+  ParseResult,
+  token_build,
+  makeParser,
+  parseRegex
+) where
+
+
 -- ADT
 data Regex
   = CharLiteral Char
