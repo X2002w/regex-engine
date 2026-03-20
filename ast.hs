@@ -8,8 +8,8 @@ data Regex
   | Union Regex Regex  -- |
   | Star Regex  -- * 克林闭包 -> 前一个字符出现零次或多次
   | Plus Regex -- 正闭包 -> 前一个元素可以出现至少一次
-  | Qusetion Regex -- ? -> 0 or 1
-  | Dot Regex -- . 指代任意字符
+  | Question Regex -- ? -> 0 or 1
+  | AnyChar  -- . 指代任意字符
   | Empty
   deriving (Show, Eq)
 
@@ -31,13 +31,20 @@ data Parser = Parser
   }
   deriving (Show)
 
-data ParseError = ParseError String Int deriving (Show)
+data ParseError 
+  = ParseError String Int 
+  deriving (Show)
 
-type ParseResult = (Regex, Parser)
+type ParseResult = Either ParseError (Regex, Parser)
+
+-- Either
+-- data Either e a
+--   = Left e
+--  | Right a
 
 -- meta char
 meta_char :: String
-meta_char = "^$|*+?()"
+meta_char = "^$|*+?()."
 
 -- 判断是否为元字符 -> 等价于 `elem` 函数
 is_meta_char :: Eq a => a -> [a] -> Bool
@@ -45,7 +52,7 @@ is_meta_char _ [] = False
 is_meta_char x (y:ys) = x == y || is_meta_char x ys
 
 text :: String 
-text = "(a|b)*(b|c).*/."
+text = "a?(a|b)*(b|c).*/."
 test_regex :: Regex
 test_regex = Union (CharLiteral 'a') (CharLiteral 'b') 
 
@@ -53,9 +60,9 @@ test_regex = Union (CharLiteral 'a') (CharLiteral 'b')
 
 token_build :: String -> [Token]
 token_build [] = []
+token_build ('/':c:cs) = Char c : token_build cs
 token_build (c:cs)
   | is_meta_char c meta_char = Special c : token_build cs
-  | is_meta_char c "/" = Trans c : token_build cs
   | otherwise = Char c : token_build cs
 
 -- ----Parser
@@ -64,15 +71,13 @@ token_build (c:cs)
 makeParser :: [Token] -> Parser
 makeParser ts = Parser ts 0
 
--- 查看当前 Token
 peekToken :: Parser -> Maybe Token
 peekToken (Parser [] _) = Nothing
 peekToken (Parser (t:_) _) = Just t
 
--- 消耗当前 Token
-nextToken :: Parser -> (Token, Parser)
-nextToken (Parser [] ptr) = error $ "The index is unexpect..." ++ show ptr
-nextToken (Parser (t:ts) ptr) = (t, Parser ts (ptr + 1))
+nextToken :: Parser -> Either ParseError (Token, Parser)
+nextToken (Parser [] ptr) = Left $ ParseError "Unexpected EOF" ptr
+nextToken (Parser (t:ts) ptr) = Right (t, Parser ts (ptr + 1))
 
 
 -- 递归下降解析器
@@ -81,42 +86,72 @@ parseRegex parser = parseUnion parser
 
 parseUnion :: Parser -> ParseResult
 parseUnion parser = do
-  (left_regex, parser') <- parseConcat parser
-  case peekToken parser' of
+  (term, p1) <- parseConcat parser
+  case peekToken p1 of
     Just (Special '|') -> do
-      -- 匹配到 | ， 消耗当前token, 并递归解析右子式
-      (_, parser'') <- nextToken parser'
-      (right_regex, parser''') <- parseUnion parser''
-      return (Union left_regex right_regex, parser''')
-    _ -> return (left_regex, parser')
-
+      (_, p2) <- nextToken p1
+      (right, p3) <- parseUnion p2
+      return (Union term right, p3)
+    _ -> return (term, p1)
 
 parseConcat :: Parser -> ParseResult 
 parseConcat parser = do
-  (first, parser') <- parseAtom parser  
-  case peekToken parser' of
-    Just (Special '|') -> 
-      return (first, parser')
-    -- Just (Special '*') ->
-      -- ..
+  case peekToken parser of
+    Just (Char _) -> go
+    Just (Special '.') -> go
+    Just (Special '(') -> go
+    _ -> return (Empty, parser)
+  where
+    go = do
+        (first, p1) <- parseFactor parser
+        (rest, p2) <- parseConcat p1
+        if rest == Empty
+            then return (first, p2)
+            else return (Concatenate first rest, p2)
 
-    -- no special char, keeping concatation
-    _ -> do
-      (rest, parser'') <- parseConcat parser'
-      return (Concatenate first rest, parser'')
+parseFactor :: Parser -> ParseResult
+parseFactor parser = do
+  (atom, p1) <- parseAtom parser
+  case peekToken p1 of
+    Just (Special '*') -> do 
+        (_, p2) <- nextToken p1
+        return (Star atom, p2)
+    Just (Special '+') -> do
+        (_, p2) <- nextToken p1
+        return (Plus atom, p2)
+    Just (Special '?') -> do
+        (_, p2) <- nextToken p1
+        return (Question atom, p2)
+    _ -> return (atom, p1)
 
 parseAtom :: Parser -> ParseResult
 parseAtom parser = 
   case peekToken parser of
     Just (Char c) -> do
-      (_, parser') <- nextToken parser
-      return (CharLiteral c, parser')
-    -- Nothing -> 
-      --Left (ParseResult "unexpected end of input" (pos parser))
-
-
+      (_, p) <- nextToken parser
+      return (CharLiteral c, p)
+    Just (Special '.') -> do
+      (_, p) <- nextToken parser
+      return (AnyChar, p)
+    Just (Special '(') -> do
+      (_, p1) <- nextToken parser
+      (expr, p2) <- parseUnion p1
+      case peekToken p2 of
+        Just (Special ')') -> do
+            (_, p3) <- nextToken p2
+            return (expr, p3)
+        _ -> Left $ ParseError "Expected closing ')'" (pos p2)
+    Just t -> Left $ ParseError ("Unexpected token in atom: " ++ show t) (pos parser)
+    Nothing -> Left $ ParseError "Unexpected EOF" (pos parser)
 
 
 
 main :: IO ()
-main = putStrLn (show (test_regex))
+main = do
+  putStrLn $ "Input: " ++ text
+  let ts = token_build text
+  putStrLn $ "Tokens: " ++ show ts
+  let parser = makeParser ts
+  case parseRegex parser of
+      Left (ParseError err idx) -> putStrLn $ "Error at " ++ show idx ++ ": " ++ err
+      Right (ast, _) -> putStrLn $ "AST: " ++ show ast
