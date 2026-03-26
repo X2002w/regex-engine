@@ -31,7 +31,6 @@ data Regex
 data Token
   = Char Char
   | Special Char
-  | Trans Char
   deriving (Show, Eq)
 
 -- Parser ADT
@@ -95,8 +94,12 @@ nextToken (Parser (t:ts) ptr) = Right (t, Parser ts (ptr + 1))
 parseRegex :: Parser -> ParseResult
 parseRegex parser = parseUnion parser
 
+
+-- analysis Union
 parseUnion :: Parser -> ParseResult
 parseUnion parser = do
+
+  -- match concatenation and ParseResult(Regex, Parser)
   (term, p1) <- parseConcat parser
   case peekToken p1 of
     Just (Special '|') -> do
@@ -105,14 +108,18 @@ parseUnion parser = do
       return (Union term right, p3)
     _ -> return (term, p1)
 
+-- analysis left regex, if next Token is char, dot or (, keep analysis and 
+-- construct Concatenate node
 parseConcat :: Parser -> ParseResult 
 parseConcat parser = do
   case peekToken parser of
     Just (Char _) -> go
     Just (Special '.') -> go
     Just (Special '(') -> go
+    -- enpty char processing
     _ -> return (Empty, parser)
   where
+    -- continue to construct concatenation
     go = do
         (first, p1) <- parseFactor parser
         (rest, p2) <- parseConcat p1
